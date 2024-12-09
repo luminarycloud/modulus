@@ -156,7 +156,7 @@ def process_partition(graph, num_partitions, halo_hops):
 
 
 def process_run(
-    run_path, point_list, node_degree, num_partitions, halo_hops, save_point_cloud=False
+    run_path, partitions_path, point_list, node_degree, num_partitions, halo_hops, save_point_cloud=False
 ):
     """Process a single run directory to generate a multi-level graph and apply partitioning."""
     run_id = os.path.basename(run_path).split("_")[-1]
@@ -165,7 +165,7 @@ def process_run(
     vtp_file = os.path.join(run_path, f"boundary_{run_id}.vtp")
 
     # Path to save the list of partitions
-    partition_file_path = to_absolute_path(f"partitions/graph_partitions_{run_id}.bin")
+    partition_file_path = os.path.join(partitions_path, f"graph_partitions_{run_id}.bin")
 
     if os.path.exists(partition_file_path):
         print(f"Partitions for run {run_id} already exist. Skipping...")
@@ -282,6 +282,7 @@ def process_run(
 
 def process_all_runs(
     base_path,
+    partitions_path,
     num_points,
     node_degree,
     num_partitions,
@@ -298,7 +299,7 @@ def process_all_runs(
     ]
 
     tasks = [
-        (run_dir, num_points, node_degree, num_partitions, halo_hops, save_point_cloud)
+        (run_dir, partitions_path, num_points, node_degree, num_partitions, halo_hops, save_point_cloud)
         for run_dir in run_dirs
     ]
 
@@ -316,6 +317,7 @@ def process_all_runs(
 def main(cfg: DictConfig) -> None:
     process_all_runs(
         base_path=to_absolute_path(cfg.data_path),
+        partitions_path=to_absolute_path(cfg.partitions_path),
         num_points=cfg.num_nodes,
         node_degree=cfg.node_degree,
         num_partitions=cfg.num_partitions,

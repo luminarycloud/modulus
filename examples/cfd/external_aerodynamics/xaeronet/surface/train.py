@@ -110,6 +110,15 @@ def main(cfg: DictConfig) -> None:
     )
     # graphs is a list of graphs, each graph is a list of partitions
     graphs = [graph_partitions for graph_partitions, _ in train_dataloader]
+    # Sort graphs by their largest partition size
+    # This keeps memory usage down by making sure the buffers allocated in earlier iteration can be 
+    # reused in later iterations by the cachin memory allocator, without running into
+    # fragmentation issues.
+    # We do this both for graphs and subgraphs, to minimize memory usage.
+    # This, combined with changing the checkpoint_segments from 3 to 5 in the config and increasing the 
+    # number of partitions to 8 allowed us to train on A100-40GBs.
+    graphs = sorted(graphs, key=lambda graph_parts: max(g.num_nodes() for g in graph_parts), reverse=True)
+
 
     if dist.rank == 0:
         validation_dataloader = create_dataloader(
@@ -181,8 +190,12 @@ def main(cfg: DictConfig) -> None:
         for i in range(len(graphs)):
             optimizer.zero_grad()
             subgraphs = graphs[i]  # Get the partitions of the graph
+            # Large to smaller to promote memory buffer reuse, see graph sorting above.
+            subgraphs = sorted(subgraphs, key=lambda g: g.num_nodes(), reverse=True)
             for j in range(cfg.num_partitions):
+                torch.cuda.reset_peak_memory_stats()  # Reset stats at start of partition
                 with torch.autocast(amp_device, enabled=True, dtype=amp_dtype):
+                    free, total = torch.cuda.mem_get_info()
                     part = subgraphs[j].to(device)
                     ndata = torch.cat(
                         (
@@ -209,6 +222,7 @@ def main(cfg: DictConfig) -> None:
                     )
                     total_loss += loss.item()
                 scaler.scale(loss).backward()
+
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 32.0)
             scaler.step(optimizer)

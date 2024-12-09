@@ -135,7 +135,7 @@ def process_file(task):
         surface_mesh_file_format,
         save_vti,
     ) = task
-
+    print(f"Reading {vtu_path}")
     vtu_mesh = read_vtu(vtu_path)
 
     grid_size_expanded = tuple(
@@ -212,6 +212,7 @@ def process_directory(
     tasks = []
     for root, _, files in os.walk(data_path):
         vtu_files = [f for f in files if f.endswith(".vtu")]
+        print(f"vtu_files: {vtu_files}\n")
         for vtu_file in vtu_files:
             vtu_path = os.path.join(root, vtu_file)
             if surface_mesh_file_format == "vtp":

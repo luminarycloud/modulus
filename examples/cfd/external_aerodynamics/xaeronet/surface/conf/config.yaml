@@ -19,7 +19,7 @@ hydra:
     chdir: true
     name: XAeroNetS
   run:
-    dir: ./outputs/${hydra:job.name}
+    dir: /gcs-mount/initial-experiments/outputs/${hydra:job.name}
 
 # ┌───────────────────────────────────────────┐
 # │            Data Preprocessing             │
@@ -27,10 +27,15 @@ hydra:
 
 num_nodes: [100000, 200000, 400000]                  # Number of nodes in the graphs
 node_degree: 6                                       # Degree of the nodes in the graphs
-num_partitions: 3                                    # Number of partitions for each graph
-data_path: /data/drivaer_aws/drivaer_data_full       # Path to the raw data
+num_partitions: 8                                    # Number of partitions for each graph
+data_path: /gcs-mount/caeml/drivaer/dataset/         # Path to the raw data
 num_preprocess_workers: 32                           # Number of workers for data preprocessing
 save_point_clouds: false                             # Save point clouds for the preprocessed data
+partitions_path: /gcs-mount/initial-experiments/drivaer_xaeronets/part8/partitions                         # Path to the partitions (.bin files)
+validation_partitions_path: /gcs-mount/initial-experiments/drivaer_xaeronets/part8/partitions_validation   # Path to the validation partitions (.bin files)
+test_partitions_path: /gcs-mount/initial-experiments/drivaer_xaeronets/part8/partitions_test # Path to the test partitions (.bin files)
+val_ratio: 0.1
+test_ratio: 0.1
 
 # ┌───────────────────────────────────────────┐
 # │           Model Configuration             │
@@ -40,12 +45,11 @@ num_message_passing_layers: 15                       # Number of message passing
 hidden_dim: 512                                      # Hidden dimension of the model
 activation: silu                                     # Activation function
 
+
 # ┌───────────────────────────────────────────┐
 # │          Training Configuration           │
 # └───────────────────────────────────────────┘
 
-partitions_path: partitions                         # Path to the partitions (.bin files)
-validation_partitions_path: validation_partitions   # Path to the validation partitions (.bin files)
 stats_file: global_stats.json                       # Path to the global statistics (.json file)
 checkpoint_filename: model_checkpoint.pth           # Filename of the model checkpoint
 num_epochs: 2000                                    # Number of epochs
@@ -59,5 +63,5 @@ validation_freq: 50                                 # Frequency of validation
 # └───────────────────────────────────────────┘
 
 use_concat_trick: true                              # Use the concatenation trick
-checkpoint_segments: 3                              # Number of segments for the activation checkpointing
+checkpoint_segments: 5                              # Number of segments for the activation checkpointing
 enable_cudnn_benchmark: true                        # Enable cudnn benchmark

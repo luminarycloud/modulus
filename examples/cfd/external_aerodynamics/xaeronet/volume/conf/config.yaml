@@ -19,7 +19,7 @@ hydra:
     chdir: true
     name: XAeroNetV
   run:
-    dir: ./outputs/${hydra:job.name}
+    dir: /gcs-mount/initial-experiments/outputs/${hydra:job.name}
 
 # ┌───────────────────────────────────────────┐
 # │            Data Preprocessing             │
@@ -35,7 +35,7 @@ grid_origin_z: -0.32                                 # Origin of the grid in z d
 num_partitions: 7                                    # Number of partitions for each voxel grid
 partition_width: 100                                 # Width of each partition (in x-direction only)
 halo_width: 40                                       # Width of the halo region (in x-direction only)
-data_path: /data/drivaer_aws/drivaer_data_full       # Path to the raw data
+data_path: /gcs-mount/caeml/drivaer/dataset/         # Path to the raw data
 num_preprocess_workers: 32                           # Number of workers for data preprocessing
 save_vti: false                                      # Save a .vti file for the preprocessed voxel data
 
@@ -52,8 +52,8 @@ attn_intermediate_channels: 256                      # Intermediate channels in 
 # │          Training Configuration           │
 # └───────────────────────────────────────────┘
 
-h5_path: drivaer_aws_h5                             # Path to the h5 files containing the voxel grids for training
-validation_h5_path: drivaer_aws_h5_validation       # Path to the h5 files containing the voxel grids for validation
+h5_path: /gcs-mount/initial-experiments/drivaer_xaeronetv_h5                             # Path to the h5 files containing the voxel grids for training
+validation_h5_path: /gcs-mount/initial-experiments/drivaer_xaeronetv_h5_validation       # Path to the h5 files containing the voxel grids for validation
 stats_file: global_stats.json                       # Path to the global statistics (.json file)
 checkpoint_filename: model_checkpoint.pth           # Filename of the model checkpoint
 num_epochs: 2000                                    # Number of epochs

@@ -88,10 +88,10 @@ To train the XAeroNet-S model, follow these steps:
    solids. Those should be combined into a single solid to properly generate a surface point
    cloud using the Modulus Tesselated geometry module.
 
-5. Run `preprocessing.py`. This will prepare and save the partitioned graphs.
+5. Run `preprocessor.py`. This will prepare and save the partitioned graphs.
 
 6. Create a `partitions_validation` folder, and move the samples you wish to use for
-   validation to that folder.
+   validation to that folder. `split_training_set.py` can be used to do it for you.
 
 7. Run `compute_stats.py` to compute the global mean and standard deviation from the
    training samples.
@@ -114,7 +114,7 @@ To train the XAeroNet-V model, follow these steps:
 3. Specify the configurations in `conf/config.yaml`. Make sure path to the dataset
    is specified correctly.
 
-4. Run `preprocessing.py`. This will prepare and save the voxel grids.
+4. Run `preprocessor.py`. This will prepare and save the voxel grids.
 
 5. Create a `drivaer_aws_h5_validation` folder, and move the samples you wish to
    use for validation to that folder.
