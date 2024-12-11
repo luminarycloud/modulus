@@ -36,8 +36,8 @@ num_partitions: 7                                    # Number of partitions for 
 partition_width: 100                                 # Width of each partition (in x-direction only)
 halo_width: 40                                       # Width of the halo region (in x-direction only)
 data_path: /gcs-mount/caeml/drivaer/dataset/         # Path to the raw data
-num_preprocess_workers: 32                           # Number of workers for data preprocessing
-save_vti: false                                      # Save a .vti file for the preprocessed voxel data
+num_preprocess_workers: 24                           # Number of workers for data preprocessing
+save_vti: true                                       # Save a .vti file for the preprocessed voxel data
 
 # ┌───────────────────────────────────────────┐
 # │           Model Configuration             │
@@ -52,8 +52,11 @@ attn_intermediate_channels: 256                      # Intermediate channels in 
 # │          Training Configuration           │
 # └───────────────────────────────────────────┘
 
-h5_path: /gcs-mount/initial-experiments/drivaer_xaeronetv_h5                             # Path to the h5 files containing the voxel grids for training
-validation_h5_path: /gcs-mount/initial-experiments/drivaer_xaeronetv_h5_validation       # Path to the h5 files containing the voxel grids for validation
+h5_path: /gcs-mount/initial-experiments/drivaer_xaeronetv/part7/h5                             # Path to the h5 files containing the voxel grids for training
+validation_h5_path: /gcs-mount/initial-experiments/drivaer_xaeronetv/part7/h5_validation  # Path to the h5 files containing the voxel grids for validation
+test_h5_path: /gcs-mount/initial-experiments/drivaer_xaeronetv/part7/h5_test
+val_ratio: 0.1
+test_ratio: 0.1 
 stats_file: global_stats.json                       # Path to the global statistics (.json file)
 checkpoint_filename: model_checkpoint.pth           # Filename of the model checkpoint
 num_epochs: 2000                                    # Number of epochs

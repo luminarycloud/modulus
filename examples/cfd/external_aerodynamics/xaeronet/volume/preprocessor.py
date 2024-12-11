@@ -212,7 +212,6 @@ def process_directory(
     tasks = []
     for root, _, files in os.walk(data_path):
         vtu_files = [f for f in files if f.endswith(".vtu")]
-        print(f"vtu_files: {vtu_files}\n")
         for vtu_file in vtu_files:
             vtu_path = os.path.join(root, vtu_file)
             if surface_mesh_file_format == "vtp":
@@ -259,11 +258,19 @@ def process_directory(
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
+    # sampling bounds are in the format
+    # (xmin, xmax, ymin, ymax, zmin, zmax)
+    # https://github.com/Kitware/VTK/blob/master/Filters/Core/vtkResampleToImage.cxx#L169C2-L169C82
+    bounds = (cfg.grid_origin_x, cfg.grid_origin_x + (cfg.num_voxels_x*cfg.spacing),
+              cfg.grid_origin_y, cfg.grid_origin_y + (cfg.num_voxels_y*cfg.spacing),
+              cfg.grid_origin_z, cfg.grid_origin_z + (cfg.num_voxels_z*cfg.spacing))
+    print(f"Bounds: {bounds}")
+
     process_directory(
         to_absolute_path(cfg.data_path),
         to_absolute_path(cfg.h5_path),
         (cfg.num_voxels_x, cfg.num_voxels_y, cfg.num_voxels_z),
-        (cfg.grid_origin_x, cfg.grid_origin_y, cfg.grid_origin_z),
+        bounds,
         surface_mesh_file_format="stl",
         num_workers=cfg.num_preprocess_workers,
         save_vti=cfg.save_vti,

@@ -33,7 +33,7 @@ import hydra
 
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
-from hydra import to_absolute_path
+from hydra.utils import to_absolute_path
 from omegaconf import DictConfig
 
 # Get the absolute path to the parent directory
@@ -119,8 +119,8 @@ def save_stats_to_json(mean, std_dev, output_file):
 def main(cfg: DictConfig) -> None:
 
     data_path = to_absolute_path(
-        cfg.partitions_path
-    )  # Directory containing the .bin graph files with partitions
+        cfg.h5_path
+    )  # Directory containing h5 files
     output_file = to_absolute_path(cfg.stats_file)  # File to save the global statistics
 
     # Find all .h5 files in the directory

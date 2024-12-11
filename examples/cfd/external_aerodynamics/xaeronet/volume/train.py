@@ -274,7 +274,7 @@ def main(cfg: DictConfig) -> None:
             # wb.log({"training loss": total_loss / len(data), "learning_rate": current_lr}, step=epoch)
 
         # Save checkpoint periodically
-        if (epoch) % cfg.save_checkpoint_frequency == 0:
+        if (epoch) % cfg.save_checkpoint_freq == 0:
             if dist.world_size > 1:
                 torch.distributed.barrier()
             if dist.rank == 0:
