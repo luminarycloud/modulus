@@ -243,7 +243,7 @@ def main(cfg: DictConfig) -> None:
                         pred_phys_filtered_denormalized, sdf_phys_filtered_denormalized
                     ) / len(data[0])
                     total_loss_continuity += loss_continuity.item()
-                    loss = loss_data * cfg.continuity_lambda * loss_continuity
+                    loss = loss_data + cfg.continuity_lambda * loss_continuity
                 scaler.scale(loss).backward()
 
             scaler.unscale_(optimizer)
