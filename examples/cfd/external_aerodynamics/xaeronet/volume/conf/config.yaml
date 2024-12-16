@@ -17,7 +17,7 @@
 hydra:
   job:
     chdir: true
-    name: XAeroNetV
+    name: XAeroNetV-fixed
   run:
     dir: /gcs-mount/initial-experiments/outputs/${hydra:job.name}
 
@@ -62,8 +62,8 @@ checkpoint_filename: model_checkpoint.pth           # Filename of the model chec
 num_epochs: 2000                                    # Number of epochs
 start_lr: 0.00015                                   # Initial learning rate (cos annealing schedule is used) 
 end_lr: 0.0000005                                   # Final learning rate (cos annealing schedule is used)                              
-save_checkpoint_freq: 5                             # Frequency of saving the model checkpoint
-validation_freq: 50                                 # Frequency of validation
+save_checkpoint_freq: 2                             # Frequency of saving the model checkpoint
+validation_freq: 10                                 # Frequency of validation
 continuity_lambda: 0.05                             # Continuity loss weight
 
 # ┌───────────────────────────────────────────┐

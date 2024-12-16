@@ -48,9 +48,10 @@ from torch.cuda.amp import GradScaler
 from torch.utils.tensorboard import SummaryWriter
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig
-
+from torch._inductor.config import compile_threads
 from dataloader import create_dataloader
 from partition import parallel_partitioning
+
 
 # Get the absolute path to the parent directory
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -67,7 +68,7 @@ from utils import (
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-
+    print(f"Compiler thread count: {compile_threads}")
     # Enable cuDNN auto-tuner
     torch.backends.cudnn.benchmark = cfg.enable_cudnn_benchmark
 
