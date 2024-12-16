@@ -36,6 +36,7 @@ import pyvista as pv
 import torch
 import hydra
 import numpy as np
+import signal
 from hydra.utils import to_absolute_path
 from torch.nn.parallel import DistributedDataParallel
 import torch.optim as optim
@@ -58,6 +59,14 @@ from utils import (
     load_checkpoint,
     count_trainable_params,
 )
+
+def handle_sigterm(signum, frame):
+    print("Received SIGTERM - exiting gracefully to allow restart after pre-emption")
+    # Do cleanup
+    sys.exit(0)
+
+# Register the handler
+signal.signal(signal.SIGTERM, handle_sigterm)
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")

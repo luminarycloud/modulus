@@ -39,6 +39,7 @@ from modulus.launch.logging import initialize_wandb
 import json
 import wandb as wb
 import hydra
+import signal
 
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
@@ -64,6 +65,14 @@ from utils import (
     count_trainable_params,
     calculate_continuity_loss,
 )
+
+def handle_sigterm(signum, frame):
+    print("Received SIGTERM - exiting gracefully to allow restart after pre-emption")
+    # Do cleanup
+    sys.exit(0)
+
+# Register the handler
+signal.signal(signal.SIGTERM, handle_sigterm)
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
