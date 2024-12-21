@@ -44,6 +44,8 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
+import torch.cuda.nvtx as nvtx
+
 
 from modulus.distributed import DistributedManager
 from modulus.launch.utils import load_checkpoint, save_checkpoint
@@ -459,11 +461,13 @@ def train_epoch(
     running_loss = 0.0
     last_loss = 0.0
     loss_interval = 1
-
+    
     for i_batch, sample_batched in enumerate(dataloader):
-
-        sampled_batched = dict_to_device(sample_batched, device)
-
+        with nvtx.annotate(f"Dataloading"):
+            load_start_time = time.perf_counter()
+            sampled_batched = dict_to_device(sample_batched, device)
+            load_end_time = time.perf_counter()
+        print(f"Device {device}, batch {i_batch + 1} loaded in: {load_end_time - load_start_time}s")
         with autocast(enabled=False):
             prediction_vol, prediction_surf = model(sampled_batched)
 
@@ -554,9 +558,9 @@ def train_epoch(
                 f"Device {device}, batch processed: {i_batch + 1} \
             , loss surface: {loss_norm_surf:.5f}, loss integral: {loss_integral:.5f}, loss surface area: {loss_norm_surf_area:.5f}"
             )
-
+    train_end_time = time.perf_counter()
     last_loss = running_loss / (i_batch + 1)  # loss per batch
-    print(f" Device {device},  batch: {i_batch + 1}, loss norm: {loss:.5f}")
+    print(f" Device {device},  epoch: {epoch_index}, loss norm: {loss:.5f}, time taken: {train_end_time - load_end_time}s")
     tb_x = epoch_index * len(dataloader) + i_batch + 1
     tb_writer.add_scalar("Loss/train", last_loss, tb_x)
 
@@ -569,7 +573,7 @@ def compute_scaling_factors(cfg: DictConfig):
 
     if model_type == "volume" or model_type == "combined":
         vol_save_path = os.path.join(
-            "outputs", cfg.project.name, "volume_scaling_factors.npy"
+            cfg.output, "volume_scaling_factors.npy"
         )
         if not os.path.exists(vol_save_path):
             input_path = cfg.data.input_dir
@@ -666,7 +670,7 @@ def compute_scaling_factors(cfg: DictConfig):
 
     if model_type == "surface" or model_type == "combined":
         surf_save_path = os.path.join(
-            "outputs", cfg.project.name, "surface_scaling_factors.npy"
+            cfg.output, "surface_scaling_factors.npy"
         )
 
         if not os.path.exists(surf_save_path):
@@ -804,10 +808,10 @@ def main(cfg: DictConfig) -> None:
         num_surf_vars = None
 
     vol_save_path = os.path.join(
-        "outputs", cfg.project.name, "volume_scaling_factors.npy"
+        cfg.output, "volume_scaling_factors.npy"
     )
     surf_save_path = os.path.join(
-        "outputs", cfg.project.name, "surface_scaling_factors.npy"
+        cfg.output, "surface_scaling_factors.npy"
     )
     if os.path.exists(vol_save_path) and os.path.exists(surf_save_path):
         vol_factors = np.load(vol_save_path)
@@ -885,7 +889,7 @@ def main(cfg: DictConfig) -> None:
         output_features_surf=num_surf_vars,
         model_parameters=cfg.model,
     ).to(dist.device)
-    model = torch.compile(model, disable=True)  # TODO make this configurable
+    model = torch.compile(model, disable=cfg.train.disable_compile)  # TODO make this configurable
 
     # Print model summary (structure and parmeter count).
     print(f"Model summary:\n{torchinfo.summary(model, verbose=0, depth=2)}\n")
@@ -990,7 +994,7 @@ def main(cfg: DictConfig) -> None:
             f"Device {dist.device} "
             f"LOSS train {avg_loss:.5f} "
             f"valid {avg_vloss:.5f} "
-            f"Current lr {scheduler.get_last_lr()[0]}"
+            f"Current lr {scheduler.get_last_lr()[0]} "
             f"Integral factor {initial_integral_factor}"
         )
 

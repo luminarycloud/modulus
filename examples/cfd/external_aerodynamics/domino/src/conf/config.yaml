@@ -27,8 +27,8 @@ hydra: # Hydra config
   output_subdir: hydra  # Default is .hydra which causes files not being uploaded in W&B.
 
 data: # Input directory for training and validation data
-  input_dir: /lustre/rranade/modulus_dev/data/volume_data/
-  input_dir_val: /lustre/rranade/modulus_dev/data/volume_data_val/
+  input_dir: /gcs-mount/preprocessed-data/domino/train/  
+  input_dir_val: /gcs-mount/preprocessed-data/domino/validation/
   bounding_box: # Bounding box dimensions for computational domain
     min: [-3.5, -2.25 , -0.32]
     max: [8.5 , 2.25  , 3.00]
@@ -92,9 +92,11 @@ model:
 
 train: # Training configurable parameters
   epochs: 500
+  disable_compile: true
   checkpoint_interval: 1
   dataloader:
     batch_size: 1
+    num_workers: 3
     pin_memory: true
   sampler:
     shuffle: true
@@ -103,6 +105,7 @@ train: # Training configurable parameters
 val: # Validation configurable parameters
   dataloader:
     batch_size: 1
+    num_workers: 3
     pin_memory: true
   sampler:
     shuffle: true
@@ -114,6 +117,6 @@ eval: # Testing configurable parameters
 
 data_processor: # Data processor configurable parameters
   kind: drivaer_aws # must be either drivesim or drivaer_aws
-  output_dir: /lustre/rranade/modulus_dev/data/volume_data/
-  input_dir: /lustre/datasets/drivaer_aws/drivaer_data_full/
+  output_dir: /gcs-mount/preprocessed-data/domino/
+  input_dir: /gcs-mount/caeml/drivaer/dataset/ 
   num_processors: 24
