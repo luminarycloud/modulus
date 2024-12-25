@@ -465,8 +465,10 @@ def train_epoch(
         sample_start_time = time.perf_counter()
         with nvtx.range("Dataloading"):
             sampled_batched = dict_to_device(sample_batched, device)
+        prediction_start_time = time.perf_counter()
         with autocast(enabled=False):
             prediction_vol, prediction_surf = model(sampled_batched)
+            loss_start_time = time.perf_counter()
             if prediction_vol is not None:
                 target_vol = sampled_batched["volume_fields"]
                 if loss_fn_type == "rmse":
@@ -539,19 +541,23 @@ def train_epoch(
         # Gather data and report
         running_loss += loss.item()
         sample_end_time = time.perf_counter()
+        loss_time = sample_end_time - loss_start_time
+        prediction_time = loss_start_time - prediction_start_time
+        load_time = prediction_start_time - sample_start_time
+        sample_time = sample_end_time - sample_start_time
         if prediction_vol is not None and prediction_surf is not None:
             print(
-                f"Device {device}, batch processed: {i_batch + 1} in {sample_end_time-sample_start_time}s, loss volume: {loss_norm_vol:.5f} \
+                f"Device {device}, batch processed: {i_batch + 1} in {sample_time}s, loss volume: {loss_norm_vol:.5f} \
             , loss surface: {loss_norm_surf:.5f}, loss integral: {loss_integral:.5f}, loss surface area: {loss_norm_surf_area:.5f}"
             )
         elif prediction_vol is not None:
             print(
-                f"Device {device}, batch processed: {i_batch + 1} in {sample_end_time-sample_start_time}s, loss volume: {loss_norm_vol:.5f}"
+                f"Device {device}, batch processed: {i_batch + 1} in {sample_time}s, loss volume: {loss_norm_vol:.5f}"
             )
         elif prediction_surf is not None:
             print(
-                f"Device {device}, batch processed: {i_batch + 1} \
-            , loss surface: {loss_norm_surf:.5f} in {sample_end_time-sample_start_time}s, loss integral: {loss_integral:.5f}, loss surface area: {loss_norm_surf_area:.5f}"
+                f"Device {device}, batch processed: {i_batch + 1} in {sample_time}s (model: {prediction_time*100/sample_time:.1f}% loss:{loss_time*100/sample_time:.1f}%) \
+            , loss surface: {loss_norm_surf:.5f}, loss integral: {loss_integral:.5f}, loss surface area: {loss_norm_surf_area:.5f}"
             )
     batch_end_time = time.perf_counter()
     last_loss = running_loss / (i_batch + 1)  # loss per batch
