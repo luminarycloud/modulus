@@ -457,20 +457,16 @@ def train_epoch(
     integral_scaling_factor,
     loss_fn_type,
 ):
-
     running_loss = 0.0
     last_loss = 0.0
     loss_interval = 1
-    
+    batch_start_time = time.perf_counter()
     for i_batch, sample_batched in enumerate(dataloader):
+        sample_start_time = time.perf_counter()
         with nvtx.range("Dataloading"):
-            load_start_time = time.perf_counter()
             sampled_batched = dict_to_device(sample_batched, device)
-            load_end_time = time.perf_counter()
-        print(f"Device {device}, batch {i_batch + 1} loaded in: {load_end_time - load_start_time}s")
         with autocast(enabled=False):
             prediction_vol, prediction_surf = model(sampled_batched)
-
             if prediction_vol is not None:
                 target_vol = sampled_batched["volume_fields"]
                 if loss_fn_type == "rmse":
@@ -542,24 +538,24 @@ def train_epoch(
             optimizer.zero_grad()
         # Gather data and report
         running_loss += loss.item()
-
+        sample_end_time = time.perf_counter()
         if prediction_vol is not None and prediction_surf is not None:
             print(
-                f"Device {device}, batch processed: {i_batch + 1}, loss volume: {loss_norm_vol:.5f} \
+                f"Device {device}, batch processed: {i_batch + 1} in {sample_end_time-sample_start_time}s, loss volume: {loss_norm_vol:.5f} \
             , loss surface: {loss_norm_surf:.5f}, loss integral: {loss_integral:.5f}, loss surface area: {loss_norm_surf_area:.5f}"
             )
         elif prediction_vol is not None:
             print(
-                f"Device {device}, batch processed: {i_batch + 1}, loss volume: {loss_norm_vol:.5f}"
+                f"Device {device}, batch processed: {i_batch + 1} in {sample_end_time-sample_start_time}s, loss volume: {loss_norm_vol:.5f}"
             )
         elif prediction_surf is not None:
             print(
                 f"Device {device}, batch processed: {i_batch + 1} \
-            , loss surface: {loss_norm_surf:.5f}, loss integral: {loss_integral:.5f}, loss surface area: {loss_norm_surf_area:.5f}"
+            , loss surface: {loss_norm_surf:.5f} in {sample_end_time-sample_start_time}s, loss integral: {loss_integral:.5f}, loss surface area: {loss_norm_surf_area:.5f}"
             )
-    train_end_time = time.perf_counter()
+    batch_end_time = time.perf_counter()
     last_loss = running_loss / (i_batch + 1)  # loss per batch
-    print(f" Device {device},  epoch: {epoch_index}, loss norm: {loss:.5f}, time taken: {train_end_time - load_end_time}s")
+    print(f" Device {device},  epoch: {epoch_index}, loss norm: {loss:.5f}, time taken: {batch_end_time - batch_start_time}s")
     tb_x = epoch_index * len(dataloader) + i_batch + 1
     tb_writer.add_scalar("Loss/train", last_loss, tb_x)
 
