@@ -463,7 +463,7 @@ def train_epoch(
     loss_interval = 1
     
     for i_batch, sample_batched in enumerate(dataloader):
-        with nvtx.annotate(f"Dataloading"):
+        with nvtx.range("Dataloading"):
             load_start_time = time.perf_counter()
             sampled_batched = dict_to_device(sample_batched, device)
             load_end_time = time.perf_counter()
@@ -483,7 +483,6 @@ def train_epoch(
                     )
 
             if prediction_surf is not None:
-
                 target_surf = sampled_batched["surface_fields"]
                 surface_areas = sampled_batched["surface_areas"]
                 surface_normals = sampled_batched["surface_normals"]
