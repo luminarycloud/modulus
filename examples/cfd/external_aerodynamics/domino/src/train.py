@@ -463,7 +463,7 @@ def train_epoch(
     batch_start_time = time.perf_counter()
     for i_batch, sample_batched in enumerate(dataloader):
         sample_start_time = time.perf_counter()
-        with nvtx.range("Dataloading"):
+        with nvtx.range("Loading Batch to GPU"):
             sampled_batched = dict_to_device(sample_batched, device)
         prediction_start_time = time.perf_counter()
         with autocast(enabled=False):

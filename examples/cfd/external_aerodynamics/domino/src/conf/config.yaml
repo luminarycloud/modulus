@@ -96,7 +96,7 @@ train: # Training configurable parameters
   checkpoint_interval: 1
   dataloader:
     batch_size: 1
-    num_workers: 3
+    num_workers: 0
     pin_memory: true
   sampler:
     shuffle: true
@@ -105,7 +105,7 @@ train: # Training configurable parameters
 val: # Validation configurable parameters
   dataloader:
     batch_size: 1
-    num_workers: 3
+    num_workers: 0
     pin_memory: true
   sampler:
     shuffle: true
