@@ -20,7 +20,7 @@ for faster loading during training. It processes files in parallel and can be
 configured through config.yaml in the data_processing tab.
 """
 
-from modulus.datapipes.cae.domino_datapipe import (
+from physicsnemo.datapipes.cae.domino_datapipe import (
     DoMINODataPipe,
     compute_scaling_factors,
 )
@@ -33,7 +33,7 @@ from omegaconf import DictConfig
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from modulus.distributed import DistributedManager
+from physicsnemo.distributed import DistributedManager
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
