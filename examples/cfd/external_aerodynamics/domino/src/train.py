@@ -47,12 +47,16 @@ from torch.utils.tensorboard import SummaryWriter
 from nvtx import annotate as nvtx_annotate
 import torch.cuda.nvtx as nvtx
 
-from modulus.distributed import DistributedManager
-from modulus.launch.utils import load_checkpoint, save_checkpoint
+from physicsnemo.distributed import DistributedManager
+from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 
-from modulus.datapipes.cae.domino_datapipe import DoMINODataPipe, CachedDoMINODataset, compute_scaling_factors
-from modulus.models.domino.model import DoMINO
-from modulus.utils.domino.utils import *
+from physicsnemo.datapipes.cae.domino_datapipe import (
+    DoMINODataPipe,
+    CachedDoMINODataset,
+    compute_scaling_factors,
+)
+from physicsnemo.models.domino.model import DoMINO
+from physicsnemo.utils.domino.utils import *
 
 
 def relative_loss_fn(output, target, padded_value=-10):
@@ -568,7 +572,6 @@ def train_epoch(
     return last_loss
 
 
-
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     compute_scaling_factors(cfg, cfg.data_processor.output_dir)
@@ -662,6 +665,7 @@ def main(cfg: DictConfig) -> None:
                 num_surface_neighbors=cfg.model.num_surface_neighbors,
                 deterministic_seed=False,
             )
+
     train_dataset = get_dataset(cfg, "train")
     val_dataset = get_dataset(cfg, "val")
 
