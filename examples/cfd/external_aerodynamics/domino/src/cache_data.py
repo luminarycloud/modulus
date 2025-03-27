@@ -38,7 +38,7 @@ from modulus.distributed import DistributedManager
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-    compute_scaling_factors(cfg, cfg.data_processor.output_dir)
+    compute_scaling_factors(cfg, cfg.data_processor.output_dir, use_cache=False)
     assert cfg.data_processor.use_cache, "Cache must be enabled for cache processing!"
     # initialize distributed manager
     DistributedManager.initialize()

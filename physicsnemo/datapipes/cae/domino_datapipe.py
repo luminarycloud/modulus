@@ -571,10 +571,150 @@ class DoMINODataPipe(Dataset):
         return return_data
 
 
-def compute_scaling_factors(cfg: DictConfig, input_path: str) -> None:
+class CachedDoMINODataset(Dataset):
+    """
+    Dataset for reading cached DoMINO data files, with optional resampling.
+    Acts as a drop-in replacement for DoMINODataPipe.
+    """
+
+    @nvtx_annotate(message="CachedDoMINODataset __init__")
+    def __init__(
+        self,
+        data_path: Union[str, Path],
+        phase: Literal["train", "val", "test"] = "train",
+        sampling: bool = False,
+        volume_points_sample: Optional[int] = None,
+        surface_points_sample: Optional[int] = None,
+        geom_points_sample: Optional[int] = None,
+        model_type=None,  # Model_type, surface, volume or combined
+        deterministic_seed=False,
+    ):
+        super().__init__()
+
+        self.model_type = model_type
+        if deterministic_seed:
+            np.random.seed(42)
+
+        if isinstance(data_path, str):
+            data_path = Path(data_path)
+        self.data_path = data_path.expanduser()
+
+        if not self.data_path.exists():
+            raise AssertionError(f"Path {self.data_path} does not exist")
+        if not self.data_path.is_dir():
+            raise AssertionError(f"Path {self.data_path} is not a directory")
+
+        self.deterministic_seed = deterministic_seed
+        self.sampling = sampling
+        self.volume_points = volume_points_sample
+        self.surface_points = surface_points_sample
+        self.geom_points = geom_points_sample
+
+        self.filenames = get_filenames(self.data_path, exclude_dirs=True)
+
+        total_files = len(self.filenames)
+
+        self.phase = phase
+        self.indices = np.array(range(total_files))
+
+        np.random.shuffle(self.indices)
+
+        if not self.filenames:
+            raise AssertionError(f"No cached files found in {self.data_path}")
+
+    def __len__(self):
+        return len(self.indices)
+
+    @nvtx_annotate(message="CachedDoMINODataset __getitem__")
+    def __getitem__(self, idx):
+        if self.deterministic_seed:
+            np.random.seed(idx)
+        nvtx.range_push("Load cached file")
+
+        index = self.indices[idx]
+        cfd_filename = self.filenames[index]
+
+        filepath = self.data_path / cfd_filename
+        result = np.load(filepath, allow_pickle=True).item()
+        result = {
+            k: v.numpy() if isinstance(v, Tensor) else v for k, v in result.items()
+        }
+
+        nvtx.range_pop()
+        if not self.sampling:
+            return result
+
+        nvtx.range_push("Sample points")
+
+        # Sample volume points if present
+        if "volume_mesh_centers" in result and self.volume_points:
+            coords_sampled, idx_volume = sample_array(
+                result["volume_mesh_centers"], self.volume_points
+            )
+            if coords_sampled.shape[0] < self.volume_points:
+                coords_sampled = pad(
+                    coords_sampled, self.volume_points, pad_value=-10.0
+                )
+
+            result["volume_mesh_centers"] = coords_sampled
+            for key in [
+                "volume_fields",
+                "pos_volume_closest",
+                "pos_volume_center_of_mass",
+                "sdf_nodes",
+            ]:
+                if key in result:
+                    result[key] = result[key][idx_volume]
+
+        # Sample surface points if present
+        if "surface_mesh_centers" in result and self.surface_points:
+            coords_sampled, idx_surface = area_weighted_shuffle_array(
+                result["surface_mesh_centers"],
+                self.surface_points,
+                result["surface_areas"],
+            )
+            if coords_sampled.shape[0] < self.surface_points:
+                coords_sampled = pad(
+                    coords_sampled, self.surface_points, pad_value=-10.0
+                )
+
+            ii = result["neighbor_indices"]
+            result["surface_mesh_neighbors"] = result["surface_mesh_centers"][ii]
+            result["surface_neighbors_normals"] = result["surface_normals"][ii]
+            result["surface_neighbors_areas"] = result["surface_areas"][ii]
+
+            result["surface_mesh_centers"] = coords_sampled
+
+            for key in [
+                "surface_fields",
+                "surface_areas",
+                "surface_normals",
+                "pos_surface_center_of_mass",
+                "surface_mesh_neighbors",
+                "surface_neighbors_normals",
+                "surface_neighbors_areas",
+            ]:
+                if key in result:
+                    result[key] = result[key][idx_surface]
+
+            del result["neighbor_indices"]
+
+        # Sample geometry points if present
+        if "geometry_coordinates" in result and self.geom_points:
+            coords_sampled, _ = shuffle_array(
+                result["geometry_coordinates"], self.geom_points
+            )
+            if coords_sampled.shape[0] < self.geom_points:
+                coords_sampled = pad(coords_sampled, self.geom_points, pad_value=-100.0)
+            result["geometry_coordinates"] = coords_sampled
+
+        nvtx.range_pop()
+        return result
+
+
+def compute_scaling_factors(cfg: DictConfig, input_path: str, use_cache: bool) -> None:
 
     model_type = cfg.model.model_type
-
     if model_type == "volume" or model_type == "combined":
         vol_save_path = os.path.join(cfg.output, "volume_scaling_factors.npy")
         if not os.path.exists(vol_save_path):
@@ -766,145 +906,48 @@ def compute_scaling_factors(cfg: DictConfig, input_path: str) -> None:
             np.save(surf_save_path, surf_scaling_factors)
 
 
-class CachedDoMINODataset(Dataset):
-    """
-    Dataset for reading cached DoMINO data files, with optional resampling.
-    Acts as a drop-in replacement for DoMINODataPipe.
-    """
+def create_domino_dataset(
+    cfg, phase, volume_variable_names, surface_variable_names, vol_factors, surf_factors
+):
+    if phase == "train":
+        input_path = cfg.data.input_dir
+    elif phase == "val":
+        input_path = cfg.data.input_dir_val
+    else:
+        raise ValueError(f"Invalid phase {phase}")
 
-    @nvtx_annotate(message="CachedDoMINODataset __init__")
-    def __init__(
-        self,
-        data_path: Union[str, Path],
-        phase: Literal["train", "val", "test"] = "train",
-        sampling: bool = False,
-        volume_points_sample: Optional[int] = None,
-        surface_points_sample: Optional[int] = None,
-        geom_points_sample: Optional[int] = None,
-        model_type=None,  # Model_type, surface, volume or combined
-        deterministic_seed=False,
-    ):
-        super().__init__()
-
-        self.model_type = model_type
-        if deterministic_seed:
-            np.random.seed(42)
-
-        if isinstance(data_path, str):
-            data_path = Path(data_path)
-        self.data_path = data_path.expanduser()
-
-        if not self.data_path.exists():
-            raise AssertionError(f"Path {self.data_path} does not exist")
-        if not self.data_path.is_dir():
-            raise AssertionError(f"Path {self.data_path} is not a directory")
-
-        self.deterministic_seed = deterministic_seed
-        self.sampling = sampling
-        self.volume_points = volume_points_sample
-        self.surface_points = surface_points_sample
-        self.geom_points = geom_points_sample
-
-        self.filenames = get_filenames(self.data_path, exclude_dirs=True)
-
-        total_files = len(self.filenames)
-
-        self.phase = phase
-        self.indices = np.array(range(total_files))
-
-        np.random.shuffle(self.indices)
-
-        if not self.filenames:
-            raise AssertionError(f"No cached files found in {self.data_path}")
-
-    def __len__(self):
-        return len(self.indices)
-
-    @nvtx_annotate(message="CachedDoMINODataset __getitem__")
-    def __getitem__(self, idx):
-        if self.deterministic_seed:
-            np.random.seed(idx)
-        nvtx.range_push("Load cached file")
-
-        index = self.indices[idx]
-        cfd_filename = self.filenames[index]
-
-        filepath = self.data_path / cfd_filename
-        result = np.load(filepath, allow_pickle=True).item()
-        result = {
-            k: v.numpy() if isinstance(v, Tensor) else v for k, v in result.items()
-        }
-
-        nvtx.range_pop()
-        if not self.sampling:
-            return result
-
-        nvtx.range_push("Sample points")
-
-        # Sample volume points if present
-        if "volume_mesh_centers" in result and self.volume_points:
-            coords_sampled, idx_volume = sample_array(
-                result["volume_mesh_centers"], self.volume_points
-            )
-            if coords_sampled.shape[0] < self.volume_points:
-                coords_sampled = pad(
-                    coords_sampled, self.volume_points, pad_value=-10.0
-                )
-
-            result["volume_mesh_centers"] = coords_sampled
-            for key in [
-                "volume_fields",
-                "pos_volume_closest",
-                "pos_volume_center_of_mass",
-                "sdf_nodes",
-            ]:
-                if key in result:
-                    result[key] = result[key][idx_volume]
-
-        # Sample surface points if present
-        if "surface_mesh_centers" in result and self.surface_points:
-            coords_sampled, idx_surface = area_weighted_shuffle_array(
-                result["surface_mesh_centers"],
-                self.surface_points,
-                result["surface_areas"],
-            )
-            if coords_sampled.shape[0] < self.surface_points:
-                coords_sampled = pad(
-                    coords_sampled, self.surface_points, pad_value=-10.0
-                )
-
-            ii = result["neighbor_indices"]
-            result["surface_mesh_neighbors"] = result["surface_mesh_centers"][ii]
-            result["surface_neighbors_normals"] = result["surface_normals"][ii]
-            result["surface_neighbors_areas"] = result["surface_areas"][ii]
-
-            result["surface_mesh_centers"] = coords_sampled
-
-            for key in [
-                "surface_fields",
-                "surface_areas",
-                "surface_normals",
-                "pos_surface_center_of_mass",
-                "surface_mesh_neighbors",
-                "surface_neighbors_normals",
-                "surface_neighbors_areas",
-            ]:
-                if key in result:
-                    result[key] = result[key][idx_surface]
-
-            del result["neighbor_indices"]
-
-        # Sample geometry points if present
-        if "geometry_coordinates" in result and self.geom_points:
-            coords_sampled, _ = shuffle_array(
-                result["geometry_coordinates"], self.geom_points
-            )
-            if coords_sampled.shape[0] < self.geom_points:
-                coords_sampled = pad(coords_sampled, self.geom_points, pad_value=-100.0)
-            result["geometry_coordinates"] = coords_sampled
-
-        nvtx.range_pop()
-        return result
+    if cfg.data_processor.use_cache:
+        return CachedDoMINODataset(
+            input_path,
+            phase=phase,
+            sampling=True,
+            volume_points_sample=cfg.model.volume_points_sample,
+            surface_points_sample=cfg.model.surface_points_sample,
+            geom_points_sample=cfg.model.geom_points_sample,
+            model_type=cfg.model.model_type,
+        )
+    else:
+        return DoMINODataPipe(
+            input_path,
+            phase=phase,
+            grid_resolution=cfg.model.interp_res,
+            volume_variables=volume_variable_names,
+            surface_variables=surface_variable_names,
+            normalize_coordinates=True,
+            sampling=True,
+            sample_in_bbox=True,
+            volume_points_sample=cfg.model.volume_points_sample,
+            surface_points_sample=cfg.model.surface_points_sample,
+            geom_points_sample=cfg.model.geom_points_sample,
+            positional_encoding=cfg.model.positional_encoding,
+            volume_factors=vol_factors,
+            surface_factors=surf_factors,
+            scaling_type=cfg.model.normalization,
+            model_type=cfg.model.model_type,
+            bounding_box_dims=cfg.data.bounding_box,
+            bounding_box_dims_surf=cfg.data.bounding_box_surface,
+            num_surface_neighbors=cfg.model.num_surface_neighbors,
+        )
 
 
 if __name__ == "__main__":

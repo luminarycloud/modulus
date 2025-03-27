@@ -23,7 +23,6 @@ configured through config.yaml in the data_processing tab.
 from modulus.datapipes.cae.domino_datapipe import (
     CachedDoMINODataset,
     DoMINODataPipe,
-    compute_scaling_factors,
 )
 import hydra
 import numpy as np
