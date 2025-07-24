@@ -15,8 +15,8 @@
 # limitations under the License.
 
 """
-This is the datapipe to read OpenFoam files (vtp/vtu/stl) and save them as point clouds 
-in npy format. 
+This is the datapipe to read VTK CFD files (vtp/vtu/stl) and save them as point clouds
+in npy format. Supports OpenFOAM and data exported from other solvers (like SHIFT datasets).
 
 """
 
@@ -32,14 +32,11 @@ import vtk
 from physicsnemo.utils.domino.utils import *
 from torch.utils.data import Dataset
 
-# AIR_DENSITY = 1.205
-# STREAM_VELOCITY = 30.00
-
 
 class DriveSimPaths:
     @staticmethod
-    def geometry_path(car_dir: Path) -> Path:
-        return car_dir / "body.stl"
+    def geometry_path(car_dir: Path, stl_suffix: str = ".stl") -> Path:
+        return car_dir / f"body{stl_suffix}"
 
     @staticmethod
     def volume_path(car_dir: Path) -> Path:
@@ -52,32 +49,50 @@ class DriveSimPaths:
 
 class DrivAerAwsPaths:
     @staticmethod
-    def _get_index(car_dir: Path) -> str:
-        return car_dir.name.removeprefix("run_")
+    def _get_index(case_dir: Path) -> str:
+        return case_dir.name.removeprefix("run_")
 
     @staticmethod
-    def geometry_path(car_dir: Path) -> Path:
-        return car_dir / f"drivaer_{DrivAerAwsPaths._get_index(car_dir)}.stl"
+    def geometry_path(case_dir: Path, stl_suffix: str = ".stl") -> Path:
+        return case_dir / f"drivaer_{DrivAerAwsPaths._get_index(case_dir)}{stl_suffix}"
 
     @staticmethod
-    def volume_path(car_dir: Path) -> Path:
-        return car_dir / f"volume_{DrivAerAwsPaths._get_index(car_dir)}.vtu"
+    def volume_path(case_dir: Path) -> Path:
+        return case_dir / f"volume_{DrivAerAwsPaths._get_index(case_dir)}.vtu"
 
     @staticmethod
-    def surface_path(car_dir: Path) -> Path:
-        return car_dir / f"boundary_{DrivAerAwsPaths._get_index(car_dir)}.vtp"
+    def surface_path(case_dir: Path) -> Path:
+        return case_dir / f"boundary_{DrivAerAwsPaths._get_index(case_dir)}.vtp"
 
 
-class OpenFoamDataset(Dataset):
+class SHIFTPaths:
+    """Path utilities for SHIFT dataset file locations."""
+
+    @staticmethod
+    def geometry_path(case_dir: Path, stl_suffix: str = ".stl") -> Path:
+        """Get path to geometry file for a SHIFT directory."""
+        return case_dir / f"merged_surfaces{stl_suffix}"
+
+    @staticmethod
+    def volume_path(case_dir: Path) -> Path:
+        return case_dir / f"merged_volumes.vtu"
+
+    @staticmethod
+    def surface_path(case_dir: Path) -> Path:
+        return case_dir / f"merged_surfaces.vtp"
+
+
+class VtkCfdDataset(Dataset):
     """
-    Datapipe for converting openfoam dataset to npy
+    Datapipe for converting VTK CFD dataset to npy format.
+    Supports OpenFOAM and data exported from other solvers (like SHIFT datasets).
 
     """
 
     def __init__(
         self,
         data_path: Union[str, Path],
-        kind: Literal["drivesim", "drivaer_aws"] = "drivesim",
+        kind: Literal["drivesim", "drivaer_aws", "shift"] = "drivesim",
         surface_variables: Optional[list] = [
             "pMean",
             "wallShearStress",
@@ -93,6 +108,7 @@ class OpenFoamDataset(Dataset):
         },
         device: int = 0,
         model_type=None,
+        stl_suffix: str = ".stl",
     ):
         if isinstance(data_path, str):
             data_path = Path(data_path)
@@ -100,11 +116,17 @@ class OpenFoamDataset(Dataset):
 
         self.data_path = data_path
 
-        supported_kinds = ["drivesim", "drivaer_aws"]
+        supported_kinds = ["drivesim", "drivaer_aws", "shift"]
         assert (
             kind in supported_kinds
         ), f"kind should be one of {supported_kinds}, got {kind}"
-        self.path_getter = DriveSimPaths if kind == "drivesim" else DrivAerAwsPaths
+        path_getters = {
+            "drivesim": DriveSimPaths,
+            "drivaer_aws": DrivAerAwsPaths,
+            "shift": SHIFTPaths,
+        }
+
+        self.path_getter = path_getters[kind]
 
         assert self.data_path.exists(), f"Path {self.data_path} does not exist"
 
@@ -112,7 +134,6 @@ class OpenFoamDataset(Dataset):
 
         self.filenames = get_filenames(self.data_path)
         random.shuffle(self.filenames)
-        self.indices = np.array(len(self.filenames))
 
         self.surface_variables = surface_variables
         self.volume_variables = volume_variables
@@ -121,24 +142,41 @@ class OpenFoamDataset(Dataset):
         self.global_params_reference = global_params_reference
 
         self.stream_velocity = 0.0
-        for vel_component in self.global_params_reference["inlet_velocity"]:
+        inlet_velocity_name = (
+            "inlet_velocity"
+            if "inlet_velocity" in self.global_params_reference
+            else "stream_velocity"
+        )
+
+        for vel_component in self.global_params_reference[inlet_velocity_name]:
             self.stream_velocity += vel_component**2
         self.stream_velocity = np.sqrt(self.stream_velocity)
         self.air_density = self.global_params_reference["air_density"]
 
         self.device = device
         self.model_type = model_type
+        self.surface_data_on_points = kind != "shift"
+        self.stl_suffix = stl_suffix
 
     def __len__(self):
         return len(self.filenames)
 
     def __getitem__(self, idx):
         cfd_filename = self.filenames[idx]
-        car_dir = self.data_path / cfd_filename
+        case_dir = self.data_path / cfd_filename
 
-        stl_path = self.path_getter.geometry_path(car_dir)
+        stl_path = self.path_getter.geometry_path(case_dir, self.stl_suffix)
+
+        # Check if STL file exists
+        if not Path(stl_path).exists():
+            raise FileNotFoundError(f"STL file not found: {stl_path}")
+
         reader = pv.get_reader(stl_path)
         mesh_stl = reader.read()
+        # Check if STL data was successfully loaded
+        if mesh_stl is None or mesh_stl.n_points == 0:
+            raise RuntimeError(f"Failed to load STL data from: {stl_path}")
+
         stl_vertices = mesh_stl.points
         stl_faces = np.array(mesh_stl.faces).reshape((-1, 4))[
             :, 1:
@@ -151,13 +189,21 @@ class OpenFoamDataset(Dataset):
         length_scale = np.amax(np.amax(stl_vertices, 0) - np.amin(stl_vertices, 0))
 
         if self.model_type == "volume" or self.model_type == "combined":
-            filepath = self.path_getter.volume_path(car_dir)
+            filepath = self.path_getter.volume_path(case_dir)
+            # Check if volume file exists
+            if not Path(filepath).exists():
+                raise FileNotFoundError(f"Volume file not found: {filepath}")
+
             reader = vtk.vtkXMLUnstructuredGridReader()
             reader.SetFileName(filepath)
             reader.Update()
 
             # Get the unstructured grid data
             polydata = reader.GetOutput()
+            # Check if VTK reader successfully loaded the data
+            if polydata is None or polydata.GetNumberOfCells() == 0:
+                raise RuntimeError(f"Failed to load volume data from: {filepath}")
+
             volume_coordinates, volume_fields = get_volume_data(
                 polydata, self.volume_variables
             )
@@ -168,8 +214,8 @@ class OpenFoamDataset(Dataset):
             volume_fields[:, 3:4] = volume_fields[:, 3:4] / (
                 self.air_density * self.stream_velocity**2.0
             )
-
-            volume_fields[:, 4:] = volume_fields[:, 4:] / (
+            length_scale = np.amax(np.amax(stl_vertices, 0) - np.amin(stl_vertices, 0))
+            volume_fields[:, 4:5] = volume_fields[:, 4:5] / (
                 self.stream_velocity * length_scale
             )
         else:
@@ -177,14 +223,33 @@ class OpenFoamDataset(Dataset):
             volume_coordinates = None
 
         if self.model_type == "surface" or self.model_type == "combined":
-            surface_filepath = self.path_getter.surface_path(car_dir)
+            surface_filepath = self.path_getter.surface_path(case_dir)
+            # Check if surface file exists
+            if not Path(surface_filepath).exists():
+                raise FileNotFoundError(f"Surface file not found: {surface_filepath}")
+
             reader = vtk.vtkXMLPolyDataReader()
             reader.SetFileName(surface_filepath)
             reader.Update()
             polydata = reader.GetOutput()
+            # Check if VTK reader successfully loaded the data
+            if polydata is None or polydata.GetNumberOfCells() == 0:
+                raise RuntimeError(
+                    f"Failed to load surface data from: {surface_filepath}"
+                )
 
-            celldata_all = get_node_to_elem(polydata)
-            celldata = celldata_all.GetCellData()
+            if self.surface_data_on_points:
+                celldata_all = get_node_to_elem(polydata)
+                celldata = celldata_all.GetCellData()
+            else:
+                celldata = polydata.GetCellData()
+
+            # Check if celldata is valid before processing
+            if celldata is None:
+                raise RuntimeError(
+                    f"No cell data found in surface file: {surface_filepath}"
+                )
+
             surface_fields = get_fields(celldata, self.surface_variables)
             surface_fields = np.concatenate(surface_fields, axis=-1)
 
@@ -212,40 +277,16 @@ class OpenFoamDataset(Dataset):
             surface_normals = None
             surface_sizes = None
 
-        # Arrange global parameters reference in a list based on the type of the parameter
-        global_params_reference_list = []
-        for name, type in self.global_params_types.items():
-            if type == "vector":
-                global_params_reference_list.extend(self.global_params_reference[name])
-            elif type == "scalar":
-                global_params_reference_list.append(self.global_params_reference[name])
-            else:
-                raise ValueError(
-                    f"Global parameter {name} not supported for  this dataset"
-                )
-        global_params_reference = np.array(
-            global_params_reference_list, dtype=np.float32
+        # Create reference array from global parameters configuration
+        global_params_reference = create_global_parameters_reference_array(
+            self.global_params_types, self.global_params_reference
         )
 
-        # Prepare the list of global parameter values for each simulation file
-        # Note: The user must ensure that the values provided here correspond to the
-        # `global_parameters` specified in `config.yaml` and that these parameters
-        # exist within each simulation file.
-        global_params_values_list = []
-        for key in self.global_params_types.keys():
-            if key == "inlet_velocity":
-                global_params_values_list.extend(
-                    self.global_params_reference["inlet_velocity"]
-                )
-            elif key == "air_density":
-                global_params_values_list.append(
-                    self.global_params_reference["air_density"]
-                )
-            else:
-                raise ValueError(
-                    f"Global parameter {key} not supported for  this dataset"
-                )
-        global_params_values = np.array(global_params_values_list, dtype=np.float32)
+        # Load parameters from JSON file if available, otherwise use constants
+        params_json_path = case_dir / "params.json"
+        global_params_values, _ = load_parameters_from_json(
+            params_json_path, self.global_params_types, global_params_reference
+        )
 
         # Add the parameters to the dictionary
         return {
@@ -266,7 +307,7 @@ class OpenFoamDataset(Dataset):
 
 
 if __name__ == "__main__":
-    fm_data = OpenFoamDataset(
+    fm_data = VtkCfdDataset(
         data_path="/code/aerofoundationdata/",
         phase="train",
         volume_variables=["UMean", "pMean", "nutMean"],

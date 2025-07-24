@@ -22,6 +22,8 @@ mesh manipulation, field normalization, and geometric computations. It supports 
 CPU (NumPy) and GPU (CuPy) operations with automatic fallbacks.
 """
 
+import json
+import numbers
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -1146,3 +1148,145 @@ def area_weighted_shuffle_array(
     selected_indices = xp.asarray(selected_indices)
 
     return arr[selected_indices], selected_indices
+
+
+def extract_global_parameters(
+    params_data: dict[str, Any],
+    global_params_types: dict[str, str],
+    params_location: str = "param dictionary",
+) -> np.ndarray:
+    """Extract and flatten global parameters from parameter data dictionary.
+    This function processes global parameters based on their types (scalar/vector)
+    and flattens them into a single array. Scalars are automatically promoted to
+    vectors when the parameter type is defined as "vector".
+    Args:
+        params_data: Dictionary containing parameter names and their values.
+        global_params_types: Dictionary mapping parameter names to their types ("scalar" or "vector").
+        params_location: Description of parameter source for error messages.
+    Returns:
+        Flattened array containing all global parameter values as float32.
+    Raises:
+        ValueError: If a required parameter is missing or has unsupported type.
+    Examples:
+        >>> params = {"pressure": 101325.0, "velocity": [1.0, 0.0, 0.0]}
+        >>> types = {"pressure": "scalar", "velocity": "vector"}
+        >>> result = extract_global_parameters(params, types)
+        >>> result.shape
+        (4,)
+        >>> np.allclose(result, [101325.0, 1.0, 0.0, 0.0])
+        True
+        >>> # Scalar automatically promoted to vector
+        >>> params_scalar = {"pressure": 101325.0, "stream_velocity": 2.5}
+        >>> types_scalar = {"pressure": "scalar", "stream_velocity": "vector"}
+        >>> result_scalar = extract_global_parameters(params_scalar, types_scalar)
+        >>> result_scalar.shape
+        (2,)
+        >>> np.allclose(result_scalar, [101325.0, 2.5])
+        True
+    """
+    global_params_values_list = []
+    for name, typ in global_params_types.items():
+        if name not in params_data:
+            raise ValueError(f"Global parameter {name} not found in {params_location}")
+        param_value = params_data[name]
+        if typ == "vector":
+            # Automatically promote scalars to vectors when vector type is expected
+            if isinstance(param_value, numbers.Number):
+                global_params_values_list.append(param_value)
+            else:
+                global_params_values_list.extend(param_value)
+        elif typ == "scalar":
+            global_params_values_list.append(param_value)
+        else:
+            raise ValueError(f"Global parameter {name} not supported for  this dataset")
+    return np.array(global_params_values_list, dtype=np.float32)
+
+
+def create_global_parameters_reference_array(
+    global_params_types: dict[str, str], global_params_reference: dict[str, Any]
+) -> np.ndarray:
+    """Create flattened reference array from global parameters types and reference values.
+    This function arranges global parameter reference values into a flattened array
+    based on their types (scalar/vector). This is commonly used to create reference
+    arrays for parameter normalization and JSON parameter loading.
+    Args:
+        global_params_types: Dictionary mapping parameter names to their types ("scalar" or "vector").
+        global_params_reference: Dictionary mapping parameter names to their reference values.
+    Returns:
+        Flattened array of reference values arranged by parameter type.
+    Raises:
+        ValueError: If a parameter has an unsupported type.
+    Examples:
+        >>> types = {"pressure": "scalar", "velocity": "vector"}
+        >>> refs = {"pressure": 101325.0, "velocity": [1.0, 0.0, 0.0]}
+        >>> ref_array = create_global_parameters_reference_array(types, refs)
+        >>> ref_array.shape
+        (4,)
+        >>> np.allclose(ref_array, [101325.0, 1.0, 0.0, 0.0])
+        True
+    """
+    # Arrange global parameters reference in a list based on the type of the parameter
+    global_params_reference_list = []
+    for name, param_type in global_params_types.items():
+        if param_type == "vector":
+            global_params_reference_list.extend(global_params_reference[name])
+        elif param_type == "scalar":
+            global_params_reference_list.append(global_params_reference[name])
+        else:
+            raise ValueError(f"Global parameter {name} not supported for this dataset")
+
+    return np.array(global_params_reference_list, dtype=np.float32)
+
+
+def load_parameters_from_json(
+    params_json_path: Path,
+    global_params_types: dict[str, str],
+    global_params_reference: np.ndarray,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Load global parameters from JSON file with fallback to reference values.
+    This function attempts to load global parameters from a JSON file and extract
+    them according to the specified types. If the file doesn't exist or parsing
+    fails, it falls back to using reference parameter values.
+    Args:
+        params_json_path: Path to JSON file containing parameter definitions.
+        global_params_types: Dictionary mapping parameter names to types ("scalar" or "vector").
+        global_params_reference: Default parameter values to use as fallback.
+    Returns:
+        Tuple containing:
+        - Array of global parameter values loaded from JSON or fallback reference values
+        - Dictionary of raw parameter data from JSON file, or empty dict if file not loaded
+    Examples:
+        >>> from pathlib import Path
+        >>> import tempfile
+        >>> import json
+        >>> # Create temporary JSON file
+        >>> with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        ...     json.dump({"pressure": 101325.0, "velocity": [1.0, 0.0, 0.0]}, f)
+        ...     temp_path = Path(f.name)
+        >>> types = {"pressure": "scalar", "velocity": "vector"}
+        >>> reference = np.array([0.0, 0.0, 0.0, 0.0])
+        >>> params, data = load_parameters_from_json(temp_path, types, reference)
+        >>> params.shape
+        (4,)
+        >>> "pressure" in data
+        True
+        >>> # Cleanup
+        >>> temp_path.unlink()
+    """
+    if params_json_path.exists():
+        try:
+            with open(params_json_path, "r") as f:
+                params_data = json.load(f)
+            return (
+                extract_global_parameters(
+                    params_data, global_params_types, params_json_path
+                ),
+                params_data,
+            )
+        except (json.JSONDecodeError, IOError) as e:
+            # Fall back to constants if JSON parsing fails
+            print(
+                f"Warning: Could not parse {params_json_path}: {e}. Using default constants."
+            )
+            return global_params_reference.copy(), {}
+    return global_params_reference.copy(), {}

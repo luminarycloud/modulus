@@ -81,6 +81,7 @@ data: # Input directory for training and validation data
     max: [4.5 , 1.2  , 1.2]
   gpu_preprocessing: true
   gpu_output: true
+  stl_suffix: .stl
 
 # ┌───────────────────────────────────────────┐
 # │          Domain Parallelism Settings      │
@@ -155,6 +156,7 @@ model:
     base_layer: 512
     fourier_features: false
     num_modes: 5
+    activation: ${model.activation}
 
 # ┌───────────────────────────────────────────┐
 # │          Training Configs                 │

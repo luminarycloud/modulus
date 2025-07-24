@@ -41,18 +41,22 @@ from physicsnemo.utils.domino.utils import (
     nd_interpolator,
     get_filenames,
     write_to_vtp,
+    extract_global_parameters,
+    create_global_parameters_reference_array,
 )
 from torch.cuda.amp import autocast
 from torch.nn.parallel import DistributedDataParallel
 from physicsnemo.distributed import DistributedManager
 
 from numpy.typing import NDArray
-from typing import Any, Iterable, List, Literal, Mapping, Optional, Union, Callable
+from typing import Optional
 import warp as wp
-from pathlib import Path
-import pandas as pd
 import matplotlib.pyplot as plt
 import pyvista as pv
+from vtk.util.numpy_support import numpy_to_vtk
+
+from scipy.spatial import KDTree
+
 
 try:
     from physicsnemo.sym.geometry.tessellation import Tessellation
@@ -686,9 +690,18 @@ class dominoInference:
         else:
             self.device = self.dist.device
 
+        # Legacy support - will be replaced by global_params
         self.air_density = torch.full((1, 1), 1.205, dtype=torch.float32).to(
             self.device
         )
+
+        # New global parameter system
+        self.global_params_values = None
+        self.global_params_reference = None
+        self.global_params_reference_array = None
+        self.global_params_types = None
+        self.global_params_reference_dict = None
+
         (
             self.num_vol_vars,
             self.num_surf_vars,
@@ -763,8 +776,12 @@ class dominoInference:
             scaling_param_path, "volume_scaling_factors.npy"
         )
 
-        vol_factors = np.load(vol_factors_path, allow_pickle=True)
-        vol_factors = torch.from_numpy(vol_factors).to(self.device)
+        if os.path.exists(vol_factors_path):
+            vol_factors = np.load(vol_factors_path, allow_pickle=True)
+            vol_factors = torch.from_numpy(vol_factors).to(self.device)
+        else:
+            vol_factors = None
+            print("Volume scaling factors not found")
 
         return vol_factors
 
@@ -774,8 +791,12 @@ class dominoInference:
             scaling_param_path, "surface_scaling_factors.npy"
         )
 
-        surf_factors = np.load(surf_factors_path, allow_pickle=True)
-        surf_factors = torch.from_numpy(surf_factors).to(self.device)
+        if os.path.exists(surf_factors_path):
+            surf_factors = np.load(surf_factors_path, allow_pickle=True)
+            surf_factors = torch.from_numpy(surf_factors).to(self.device)
+        else:
+            surf_factors = None
+            print("Surface scaling factors not found")
 
         return surf_factors
 
@@ -827,30 +848,37 @@ class dominoInference:
         self.length_scale = length_scale
 
     def get_num_variables(self):
+        model_type = self.cfg.model.model_type
         volume_variable_names = list(self.cfg.variables.volume.solution.keys())
         num_vol_vars = 0
-        for j in volume_variable_names:
-            if self.cfg.variables.volume.solution[j] == "vector":
-                num_vol_vars += 3
-            else:
-                num_vol_vars += 1
+        if model_type in ["volume", "combined"]:
+            for j in volume_variable_names:
+                if self.cfg.variables.volume.solution[j] == "vector":
+                    num_vol_vars += 3
+                else:
+                    num_vol_vars += 1
+        else:
+            num_vol_vars = None
 
         surface_variable_names = list(self.cfg.variables.surface.solution.keys())
         num_surf_vars = 0
-        for j in surface_variable_names:
-            if self.cfg.variables.surface.solution[j] == "vector":
-                num_surf_vars += 3
-            else:
-                num_surf_vars += 1
+        if model_type in ["surface", "combined"]:
+            for j in surface_variable_names:
+                if self.cfg.variables.surface.solution[j] == "vector":
+                    num_surf_vars += 3
+                else:
+                    num_surf_vars += 1
+        else:
+            num_surf_vars = None
 
         num_global_features = 0
-        global_params_names = list(cfg.variables.global_parameters.keys())
+        global_params_names = list(self.cfg.variables.global_parameters.keys())
         for param in global_params_names:
-            if cfg.variables.global_parameters[param].type == "vector":
+            if self.cfg.variables.global_parameters[param].type == "vector":
                 num_global_features += len(
-                    cfg.variables.global_parameters[param].reference
+                    self.cfg.variables.global_parameters[param].reference
                 )
-            elif cfg.variables.global_parameters[param].type == "scalar":
+            elif self.cfg.variables.global_parameters[param].type == "scalar":
                 num_global_features += 1
             else:
                 raise ValueError(f"Unknown global parameter type")
@@ -893,16 +921,103 @@ class dominoInference:
         self.vol_factors = self.load_volume_scaling_factors()
         self.surf_factors = self.load_surface_scaling_factors()
         self.load_bounding_box()
+        # Initialize global parameter reference values (read-only)
+        self.initialize_global_params_reference()
 
-    def set_stream_velocity(self, stream_velocity):
-        self.stream_velocity = torch.full(
-            (1, 1), stream_velocity, dtype=torch.float32
+    def initialize_global_params_reference(self):
+        """Initialize global parameter reference values from config (read-only)."""
+        global_params_names = list(self.cfg.variables.global_parameters.keys())
+        self.global_params_reference_dict = {
+            name: self.cfg.variables.global_parameters[name]["reference"]
+            for name in global_params_names
+        }
+        self.global_params_types = {
+            name: self.cfg.variables.global_parameters[name]["type"]
+            for name in global_params_names
+        }
+
+        # Create reference array
+        self.global_params_reference_array = create_global_parameters_reference_array(
+            self.global_params_types, self.global_params_reference_dict
+        )
+        self.global_params_reference = torch.from_numpy(
+            self.global_params_reference_array
         ).to(self.device)
+        self.global_params_reference = torch.unsqueeze(
+            self.global_params_reference, 0
+        )  # (1, N)
+        self.global_params_reference = torch.unsqueeze(
+            self.global_params_reference, -1
+        )  # (1, N, 1)
+
+        # Initialize with reference values
+        self.global_params_values = self.global_params_reference.clone()
+
+    def set_global_params(self, params_dict):
+        """Set global parameters from a dictionary."""
+        if self.global_params_types is None:
+            raise RuntimeError(
+                "Global parameters not initialized. Call initialize_model first."
+            )
+
+        # Extract parameters using the utility function
+        global_params_array = extract_global_parameters(
+            params_dict, self.global_params_types, "set_global_params"
+        )
+        self.global_params_values = torch.from_numpy(global_params_array).to(
+            self.device
+        )
+        self.global_params_values = torch.unsqueeze(
+            self.global_params_values, 0
+        )  # (1, N)
+        self.global_params_values = torch.unsqueeze(
+            self.global_params_values, -1
+        )  # (1, N, 1)
+
+    def get_stream_velocity_and_air_density(self):
+        """Extract stream velocity and air density from global parameters for backward compatibility."""
+        if self.global_params_values is not None:
+            # Extract from global parameters based on the parameter order
+            param_idx = 0
+            stream_velocity = None
+            air_density = None
+
+            for name, param_type in self.global_params_types.items():
+                if name == "stream_velocity":
+                    # For vector stream_velocity, take the first component
+                    # This assumes no side-slip
+                    stream_velocity = self.global_params_values[0, param_idx, 0]
+                elif name == "air_density":
+                    air_density = self.global_params_values[0, param_idx, 0]
+
+                # Update index based on parameter type
+                if param_type == "vector":
+                    param_idx += len(self.global_params_reference_dict[name])
+                else:
+                    param_idx += 1
+
+            return stream_velocity, air_density
+        else:
+            # Fallback to legacy values
+            return (
+                self.stream_velocity[0, 0]
+                if self.stream_velocity is not None
+                else None,
+                self.air_density[0, 0] if self.air_density is not None else None,
+            )
 
     def set_stencil_size(self, stencil_size):
         self.stencil_size = stencil_size
 
+    # Legacy methods for backward compatibility
+    def set_stream_velocity(self, stream_velocity):
+        """Legacy method - use set_global_params instead."""
+        self.stream_velocity = torch.full(
+            (1, 1), stream_velocity, dtype=torch.float32
+        ).to(self.device)
+
     def set_air_density(self, air_density):
+        """Legacy method - use set_global_params instead."""
         self.air_density = torch.full((1, 1), air_density, dtype=torch.float32).to(
             self.device
         )
@@ -1036,8 +1151,6 @@ class dominoInference:
                         pos_normals_com[:, start_idx:end_idx],
                         self.s_grid,
                         self.model,
-                        inlet_velocity=self.stream_velocity,
-                        air_density=self.air_density,
                     )
                     surface_solutions[:, start_idx:end_idx] = surface_solutions_batch
             else:
@@ -1061,8 +1174,6 @@ class dominoInference:
                         pos_normals_com[:, start_idx:end_idx],
                         self.s_grid,
                         self.model,
-                        inlet_velocity=self.stream_velocity,
-                        air_density=self.air_density,
                     )
                     # print(torch.amax(surface_solutions_batch, (0, 1)), torch.amin(surface_solutions_batch, (0, 1)))
                     surface_solutions[:, start_idx:end_idx] = surface_solutions_batch
@@ -1091,18 +1202,17 @@ class dominoInference:
                 surface_solutions_all, self.surf_factors[0], self.surf_factors[1]
             )
 
+        # Get stream velocity and air density for result processing
+        stream_velocity, air_density = self.get_stream_velocity_and_air_density()
+
         self.out_dict["surface_coordinates"] = (
             0.5 * (surface_coordinates_all + 1.0) * (cmax - cmin) + cmin
         )
         self.out_dict["pressure_surface"] = (
-            surface_solutions_all[:, :, :1]
-            * self.stream_velocity**2.0
-            * self.air_density
+            surface_solutions_all[:, :, :1] * stream_velocity**2.0 * air_density
         )
         self.out_dict["wall-shear-stress"] = (
-            surface_solutions_all[:, :, 1:4]
-            * self.stream_velocity**2.0
-            * self.air_density
+            surface_solutions_all[:, :, 1:4] * stream_velocity**2.0 * air_density
         )
         self.sampling_indices = sampling_indices
 
@@ -1161,8 +1271,6 @@ class dominoInference:
                     self.grid,
                     self.model,
                     use_sdf_basis=self.cfg.model.use_sdf_in_basis_func,
-                    inlet_velocity=self.stream_velocity,
-                    air_density=self.air_density,
                 )
                 volume_solutions[:, start_idx:end_idx] = volume_solutions_batch
                 end_event.record()
@@ -1184,9 +1292,6 @@ class dominoInference:
         volume_coordinates_all = volume_coordinates
         volume_solutions_all = volume_solutions
 
-        cmax = scaling_factors[0]
-        cmin = scaling_factors[1]
-
         volume_coordinates_all = torch.reshape(
             volume_coordinates_all, (1, num_sample_points, 3)
         )
@@ -1199,24 +1304,23 @@ class dominoInference:
                 volume_solutions_all, self.vol_factors[0], self.vol_factors[1]
             )
 
+        stream_velocity, air_density = self.get_stream_velocity_and_air_density()
+
         self.out_dict["coordinates"] = (
             0.5 * (volume_coordinates_all + 1.0) * (cmax - cmin) + cmin
         )
-        self.out_dict["velocity"] = (
-            volume_solutions_all[:, :, :3] * self.stream_velocity
-        )
+        self.out_dict["velocity"] = volume_solutions_all[:, :, :3] * stream_velocity
+
         self.out_dict["pressure"] = (
-            volume_solutions_all[:, :, 3:4]
-            * self.stream_velocity**2.0
-            * self.air_density
+            volume_solutions_all[:, :, 3:4] * stream_velocity**2.0 * air_density
         )
         # self.out_dict["turbulent-kinetic-energy"] = (
         #     volume_solutions_all[:, :, 4:5]
-        #     * self.stream_velocity**2.0
-        #     * self.air_density
+        #     * stream_velocity**2.0
+        #     * air_density
         # )
         # self.out_dict["turbulent-viscosity"] = (
-        #     volume_solutions_all[:, :, 5:] * self.stream_velocity * self.length_scale
+        #     volume_solutions_all[:, :, 5:] * stream_velocity * self.length_scale
         # )
         self.out_dict["bounding_box_dims"] = torch.vstack(self.bounding_box_min_max)
 
@@ -1232,20 +1336,18 @@ class dominoInference:
                 0.5 * (volume_coordinates_all + 1.0) * (cmax - cmin) + cmin
             )
             volume_solutions_all[:, :, :3] = (
-                volume_solutions_all[:, :, :3] * self.stream_velocity
+                volume_solutions_all[:, :, :3] * stream_velocity
             )
             volume_solutions_all[:, :, 3:4] = (
-                volume_solutions_all[:, :, 3:4]
-                * self.stream_velocity**2.0
-                * self.air_density
+                volume_solutions_all[:, :, 3:4] * stream_velocity**2.0 * air_density
             )
             # volume_solutions_all[:, :, 4:5] = (
             #     volume_solutions_all[:, :, 4:5]
-            #     * self.stream_velocity**2.0
-            #     * self.air_density
+            #     * stream_velocity**2.0
+            #     * air_density
             # )
             # volume_solutions_all[:, :, 5] = (
-            #     volume_solutions_all[:, :, 5] * self.stream_velocity * self.length_scale
+            #     volume_solutions_all[:, :, 5] * stream_velocity * self.length_scale
             # )
             volume_coordinates_all = volume_coordinates_all.cpu().numpy()
             volume_solutions_all = volume_solutions_all.cpu().numpy()
@@ -1263,7 +1365,7 @@ class dominoInference:
                 prediction_grid[:, int(ny / 4), :, 0],
                 prediction_grid[:, int(ny / 2), :, 0],
                 var="x-vel",
-                save_path=plot_save_path + f"x-vel-midplane_{self.stream_velocity}.png",
+                save_path=plot_save_path + f"x-vel-midplane_{stream_velocity}.png",
                 axes_titles=axes_titles,
                 plot_error=False,
             )
@@ -1271,7 +1373,7 @@ class dominoInference:
                 prediction_grid[:, int(ny / 4), :, 1],
                 prediction_grid[:, int(ny / 2), :, 1],
                 var="y-vel",
-                save_path=plot_save_path + f"y-vel-midplane_{self.stream_velocity}.png",
+                save_path=plot_save_path + f"y-vel-midplane_{stream_velocity}.png",
                 axes_titles=axes_titles,
                 plot_error=False,
             )
@@ -1279,7 +1381,7 @@ class dominoInference:
                 prediction_grid[:, int(ny / 4), :, 2],
                 prediction_grid[:, int(ny / 2), :, 2],
                 var="z-vel",
-                save_path=plot_save_path + f"z-vel-midplane_{self.stream_velocity}.png",
+                save_path=plot_save_path + f"z-vel-midplane_{stream_velocity}.png",
                 axes_titles=axes_titles,
                 plot_error=False,
             )
@@ -1287,7 +1389,7 @@ class dominoInference:
                 prediction_grid[:, int(ny / 4), :, 3],
                 prediction_grid[:, int(ny / 2), :, 3],
                 var="pres",
-                save_path=plot_save_path + f"pres-midplane_{self.stream_velocity}.png",
+                save_path=plot_save_path + f"pres-midplane_{stream_velocity}.png",
                 axes_titles=axes_titles,
                 plot_error=False,
             )
@@ -1295,7 +1397,7 @@ class dominoInference:
             #     prediction_grid[:, int(ny / 4), :, 4],
             #     prediction_grid[:, int(ny / 2), :, 4],
             #     var="tke",
-            #     save_path=plot_save_path + f"tke-midplane_{self.stream_velocity}.png",
+            #     save_path=plot_save_path + f"tke-midplane_{stream_velocity}.png",
             #     axes_titles=axes_titles,
             #     plot_error=False,
             # )
@@ -1303,7 +1405,7 @@ class dominoInference:
             #     prediction_grid[:, int(ny / 4), :, 5],
             #     prediction_grid[:, int(ny / 2), :, 5],
             #     var="nut",
-            #     save_path=plot_save_path + f"nut-midplane_{self.stream_velocity}.png",
+            #     save_path=plot_save_path + f"nut-midplane_{stream_velocity}.png",
             #     axes_titles=axes_titles,
             #     plot_error=False,
             # )
@@ -1369,24 +1471,13 @@ class dominoInference:
         pos_normals_com,
         s_grid,
         model,
-        inlet_velocity,
-        air_density,
     ):
         """
-        Global parameters: For this particular case, the model was trained on single velocity/density values
-        across all simulations. Hence, global_params_values and global_params_reference are the same.
+        Compute surface solutions using the generalized global parameter system.
         """
-        global_params_values = torch.cat(
-            (inlet_velocity, air_density), axis=1
-        )  # (1, 2)
-        global_params_values = torch.unsqueeze(global_params_values, -1)  # (1, 2, 1)
-
-        global_params_reference = torch.cat(
-            (inlet_velocity, air_density), axis=1
-        )  # (1, 2)
-        global_params_reference = torch.unsqueeze(
-            global_params_reference, -1
-        )  # (1, 2, 1)
+        # Use the generalized global parameter system
+        global_params_values = self.global_params_values
+        global_params_reference = self.global_params_reference
 
         if self.dist.world_size == 1:
             geo_encoding_local = model.geo_encoding_local(
@@ -1445,22 +1536,13 @@ class dominoInference:
         p_grid,
         model,
         use_sdf_basis,
-        inlet_velocity,
-        air_density,
     ):
-
-        ## Global parameters
-        global_params_values = torch.cat(
-            (inlet_velocity, air_density), axis=1
-        )  # (1, 2)
-        global_params_values = torch.unsqueeze(global_params_values, -1)  # (1, 2, 1)
-
-        global_params_reference = torch.cat(
-            (inlet_velocity, air_density), axis=1
-        )  # (1, 2)
-        global_params_reference = torch.unsqueeze(
-            global_params_reference, -1
-        )  # (1, 2, 1)
+        """
+        Compute volume solutions using the generalized global parameter system.
+        """
+        # Use the generalized global parameter system
+        global_params_values = self.global_params_values
+        global_params_reference = self.global_params_reference
 
         if self.dist.world_size == 1:
             geo_encoding_local = model.geo_encoding_local(
@@ -1518,7 +1600,7 @@ if __name__ == "__main__":
     input_path = cfg.eval.test_path
     dirnames = get_filenames(input_path)
     dev_id = torch.cuda.current_device()
-    num_files = int(len(dirnames) / 8)
+    num_files = int(len(dirnames) / dist.world_size)
     dirnames_per_gpu = dirnames[int(num_files * dev_id) : int(num_files * (dev_id + 1))]
 
     domino = dominoInference(cfg, dist, False)
@@ -1550,13 +1632,15 @@ if __name__ == "__main__":
         domino.compute_geo_encoding()
 
         # Calculate volume solutions
-        domino.compute_volume_solutions(
-            num_sample_points=10_256_000, plot_solutions=False
-        )
+        if cfg.model.model_type in ["volume", "combined"]:
+            domino.compute_volume_solutions(
+                num_sample_points=10_256_000, plot_solutions=True
+            )
 
         # Calculate surface solutions
-        domino.compute_surface_solutions()
-        domino.compute_forces()
+        if cfg.model.model_type in ["surface", "combined"]:
+            domino.compute_surface_solutions()
+            domino.compute_forces()
         out_dict = domino.get_out_dict()
 
         print(

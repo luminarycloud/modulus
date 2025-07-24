@@ -15,17 +15,17 @@
 # limitations under the License.
 
 """
-This code runs the data processing in parallel to load OpenFoam files, process them 
-and save in the npy format for faster processing in the DoMINO datapipes. Several 
-parameters such as number of processors, input and output paths, etc. can be 
+This code runs the data processing in parallel to load VTK CFD files, process them
+and save in the npy format for faster processing in the DoMINO datapipes. Several
+parameters such as number of processors, input and output paths, etc. can be
 configured in config.yaml in the data_processing tab.
 """
 
-from openfoam_datapipe import OpenFoamDataset
+from vtk_cfd_dataset import VtkCfdDataset
 from physicsnemo.utils.domino.utils import *
 import multiprocessing
 import hydra, time
-from hydra.utils import to_absolute_path
+import numbers
 from omegaconf import DictConfig, OmegaConf
 
 
@@ -54,7 +54,6 @@ def process_files(*args_list):
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig):
     print(f"Config summary:\n{OmegaConf.to_yaml(cfg, sort_keys=True)}")
-    phase = "train"
     volume_variable_names = list(cfg.variables.volume.solution.keys())
     num_vol_vars = 0
     for j in volume_variable_names:
@@ -77,12 +76,21 @@ def main(cfg: DictConfig):
         name: cfg.variables.global_parameters[name]["reference"]
         for name in global_params_names
     }
+
+    epsilon = 1e-10  # Normalization will fail if reference is too close to zero
+    for name, value in global_params_reference.items():
+        if isinstance(value, numbers.Number):
+            if abs(value) <= epsilon:
+                raise ValueError(
+                    f"Global parameter '{name}' has a reference value of {value}, which is too close to zero."
+                )
+
     global_params_types = {
         name: cfg.variables.global_parameters[name]["type"]
         for name in global_params_names
     }
 
-    fm_data = OpenFoamDataset(
+    fm_data = VtkCfdDataset(
         cfg.data_processor.input_dir,
         kind=cfg.data_processor.kind,
         volume_variables=volume_variable_names,
@@ -90,6 +98,7 @@ def main(cfg: DictConfig):
         global_params_types=global_params_types,
         global_params_reference=global_params_reference,
         model_type=cfg.model.model_type,
+        stl_suffix=cfg.data.stl_suffix,
     )
     output_dir = cfg.data_processor.output_dir
     create_directory(output_dir)
