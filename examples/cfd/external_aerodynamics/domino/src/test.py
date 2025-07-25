@@ -445,13 +445,6 @@ def main(cfg: DictConfig):
         global_params_values, params_data = load_parameters_from_json(
             filepath / "params.json", global_params_types, global_params_reference
         )
-        alpha = float(params_data.get("alpha", 0.0))
-        x_moment_center = float(params_data.get("x_moment_center_in_meter", 0.0))
-        z_moment_center = float(params_data.get("z_moment_center_in_meter", 0.0))
-        moment_center = np.array(
-            [x_moment_center, 0.0, z_moment_center], dtype=np.float32
-        )
-        print(f"Alpha: {alpha}, moment center: {moment_center}")
         if kind == "drivaer_aws":
             tag = int(re.findall(r"(\w+?)(\d+)", dirname)[0][1])
         else:
