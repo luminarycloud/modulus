@@ -15,13 +15,13 @@
 # limitations under the License.
 
 """
-This code runs the data processing in parallel to load OpenFoam files, process them 
-and save in the npy format for faster processing in the DoMINO datapipes. Several 
-parameters such as number of processors, input and output paths, etc. can be 
+This code runs the data processing in parallel to load VTK CFD files, process them
+and save in the npy format for faster processing in the DoMINO datapipes. Several
+parameters such as number of processors, input and output paths, etc. can be
 configured in config.yaml in the data_processing tab.
 """
 
-from openfoam_datapipe import OpenFoamDataset
+from openfoam_datapipe import VtkCfdDataset
 from physicsnemo.utils.domino.utils import *
 import multiprocessing
 import hydra, time
@@ -90,7 +90,7 @@ def main(cfg: DictConfig):
         for name in global_params_names
     }
 
-    fm_data = OpenFoamDataset(
+    fm_data = VtkCfdDataset(
         cfg.data_processor.input_dir,
         kind=cfg.data_processor.kind,
         volume_variables=volume_variable_names,

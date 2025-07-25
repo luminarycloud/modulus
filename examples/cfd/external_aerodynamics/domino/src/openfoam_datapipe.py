@@ -15,8 +15,8 @@
 # limitations under the License.
 
 """
-This is the datapipe to read OpenFoam files (vtp/vtu/stl) and save them as point clouds 
-in npy format. 
+This is the datapipe to read VTK CFD files (vtp/vtu/stl) and save them as point clouds
+in npy format. Supports OpenFOAM and data exported from other solvers (like SHIFT datasets).
 
 """
 
@@ -82,9 +82,10 @@ class SHIFTPaths:
         return case_dir / f"merged_surfaces.vtp"
 
 
-class OpenFoamDataset(Dataset):
+class VtkCfdDataset(Dataset):
     """
-    Datapipe for converting openfoam dataset to npy
+    Datapipe for converting VTK CFD dataset to npy format.
+    Supports OpenFOAM and data exported from other solvers (like SHIFT datasets).
 
     """
 
@@ -306,7 +307,7 @@ class OpenFoamDataset(Dataset):
 
 
 if __name__ == "__main__":
-    fm_data = OpenFoamDataset(
+    fm_data = VtkCfdDataset(
         data_path="/code/aerofoundationdata/",
         phase="train",
         volume_variables=["UMean", "pMean", "nutMean"],
