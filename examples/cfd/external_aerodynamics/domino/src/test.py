@@ -35,28 +35,25 @@ from omegaconf import DictConfig, OmegaConf
 
 import numpy as np
 
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Iterable, List, Literal, Mapping, Optional, Union, Callable
 
-import pandas as pd
+from openfoam_datapipe import (
+    DriveSimPaths,
+    DrivAerAwsPaths,
+    SHIFTPaths,
+)
 import pyvista as pv
 
 import torch
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, Dataset
 
 import vtk
 from vtk.util import numpy_support
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.datapipes.cae.domino_datapipe import DoMINODataPipe
 from physicsnemo.models.domino.model import DoMINO
 from physicsnemo.utils.domino.utils import *
 from physicsnemo.utils.sdf import signed_distance_field
-
-# AIR_DENSITY = 1.205
-# STREAM_VELOCITY = 30.00
 
 
 def loss_fn(output, target):
@@ -396,21 +393,72 @@ def main(cfg: DictConfig):
         model = model.module
 
     dirnames = get_filenames(input_path)
-    dev_id = torch.cuda.current_device()
-    num_files = int(len(dirnames) / dist.world_size)
-    dirnames_per_gpu = dirnames[int(num_files * dev_id) : int(num_files * (dev_id + 1))]
+    # Calculate base number of files per GPU
+    base_files_per_gpu = len(dirnames) // dist.world_size
+
+    # Calculate remainder
+    remainder = len(dirnames) % dist.world_size
+
+    # Distribute the remainder evenly
+    # GPUs with rank < remainder get one extra file
+    if dist.rank < remainder:
+        start_idx = dist.rank * (base_files_per_gpu + 1)
+        end_idx = start_idx + base_files_per_gpu + 1
+    else:
+        start_idx = dist.rank * base_files_per_gpu + remainder
+        end_idx = start_idx + base_files_per_gpu
+
+    dirnames_per_gpu = dirnames[start_idx:end_idx]
 
     pred_save_path = cfg.eval.save_path
     if dist.rank == 0:
         create_directory(pred_save_path)
 
-    for count, dirname in enumerate(dirnames_per_gpu):
+    path_getters = {
+        "drivesim": DriveSimPaths,
+        "drivaer_aws": DrivAerAwsPaths,
+        "shift": SHIFTPaths,
+    }
+    kind = cfg.data_processor.kind
+    path_getter = path_getters[kind]
+    stl_suffix = cfg.data.stl_suffix
+
+    # Get global parameters and global parameters scaling from config.yaml
+    global_params_names = list(cfg.variables.global_parameters.keys())
+    global_params_reference_dict = {
+        name: cfg.variables.global_parameters[name]["reference"]
+        for name in global_params_names
+    }
+    global_params_types = {
+        name: cfg.variables.global_parameters[name]["type"]
+        for name in global_params_names
+    }
+
+    global_params_reference = create_global_parameters_reference_array(
+        global_params_types, global_params_reference_dict
+    )
+
+    for i, dirname in enumerate(dirnames_per_gpu):
         # print(f"Processing file {dirname}")
-        filepath = os.path.join(input_path, dirname)
-        tag = int(re.findall(r"(\w+?)(\d+)", dirname)[0][1])
-        stl_path = os.path.join(filepath, f"drivaer_{tag}.stl")
-        vtp_path = os.path.join(filepath, f"boundary_{tag}.vtp")
-        vtu_path = os.path.join(filepath, f"volume_{tag}.vtu")
+        filepath = Path(input_path) / dirname
+        # Load parameters from JSON file if available, otherwise use reference values
+        global_params_values, params_data = load_parameters_from_json(
+            filepath / "params.json", global_params_types, global_params_reference
+        )
+        alpha = float(params_data.get("alpha", 0.0))
+        x_moment_center = float(params_data.get("x_moment_center_in_meter", 0.0))
+        z_moment_center = float(params_data.get("z_moment_center_in_meter", 0.0))
+        moment_center = np.array(
+            [x_moment_center, 0.0, z_moment_center], dtype=np.float32
+        )
+        print(f"Alpha: {alpha}, moment center: {moment_center}")
+        if kind == "drivaer_aws":
+            tag = int(re.findall(r"(\w+?)(\d+)", dirname)[0][1])
+        else:
+            tag = dirname.replace("/", "")
+        stl_path = path_getter.geometry_path(filepath, stl_suffix)
+        vtp_path = path_getter.surface_path(filepath)
+        vtu_path = path_getter.volume_path(filepath)
 
         vtp_pred_save_path = os.path.join(
             pred_save_path, f"boundary_{tag}_predicted.vtp"
@@ -459,50 +507,6 @@ def main(cfg: DictConfig):
         sdf_surf_grid = np.float32(sdf_surf_grid)
         surf_grid_max_min = np.float32(np.asarray([s_min, s_max]))
 
-        # Get global parameters and global parameters scaling from config.yaml
-        global_params_names = list(cfg.variables.global_parameters.keys())
-        global_params_reference = {
-            name: cfg.variables.global_parameters[name]["reference"]
-            for name in global_params_names
-        }
-        global_params_types = {
-            name: cfg.variables.global_parameters[name]["type"]
-            for name in global_params_names
-        }
-        stream_velocity = global_params_reference["inlet_velocity"][0]
-        air_density = global_params_reference["air_density"]
-
-        # Arrange global parameters reference in a list, ensuring it is flat
-        global_params_reference_list = []
-        for name, type in global_params_types.items():
-            if type == "vector":
-                global_params_reference_list.extend(global_params_reference[name])
-            elif type == "scalar":
-                global_params_reference_list.append(global_params_reference[name])
-            else:
-                raise ValueError(
-                    f"Global parameter {name} not supported for  this dataset"
-                )
-        global_params_reference = np.array(
-            global_params_reference_list, dtype=np.float32
-        )
-
-        # Define the list of global parameter values for each simulation.
-        # Note: The user must ensure that the values provided here correspond to the
-        # `global_parameters` specified in `config.yaml` and that these parameters
-        # exist within each simulation file.
-        global_params_values_list = []
-        for key in global_params_types.keys():
-            if key == "inlet_velocity":
-                global_params_values_list.append(stream_velocity)
-            elif key == "air_density":
-                global_params_values_list.append(air_density)
-            else:
-                raise ValueError(
-                    f"Global parameter {key} not supported for  this dataset"
-                )
-        global_params_values = np.array(global_params_values_list, dtype=np.float32)
-
         # Read VTP
         if model_type == "surface" or model_type == "combined":
             reader = vtk.vtkXMLPolyDataReader()
@@ -512,8 +516,14 @@ def main(cfg: DictConfig):
 
             celldata_all = get_node_to_elem(polydata_surf)
 
-            celldata = celldata_all.GetCellData()
-            surface_fields = get_fields(celldata, surface_variable_names)
+            if cfg.data_processor.kind != "shift":
+                celldata_all = get_node_to_elem(polydata_surf)
+            else:
+                celldata_all = polydata_surf
+
+            surface_fields = get_fields(
+                celldata_all.GetCellData(), surface_variable_names
+            )
             surface_fields = np.concatenate(surface_fields, axis=-1)
 
             mesh = pv.PolyData(polydata_surf)
@@ -828,9 +838,10 @@ def main(cfg: DictConfig):
             volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
             polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 4:5])
-            volParam_vtk.SetName(f"{volume_variable_names[2]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+            if num_vol_vars > 4:
+                volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 4:5])
+                volParam_vtk.SetName(f"{volume_variable_names[2]}Pred")
+                polydata_vol.GetPointData().AddArray(volParam_vtk)
 
             write_to_vtu(polydata_vol, vtu_pred_save_path)
 
