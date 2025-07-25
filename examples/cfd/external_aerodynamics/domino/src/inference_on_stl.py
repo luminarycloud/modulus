@@ -876,7 +876,7 @@ class dominoInference:
         for param in global_params_names:
             if self.cfg.variables.global_parameters[param].type == "vector":
                 num_global_features += len(
-                    cfg.variables.global_parameters[param].reference
+                    self.cfg.variables.global_parameters[param].reference
                 )
             elif self.cfg.variables.global_parameters[param].type == "scalar":
                 num_global_features += 1
@@ -952,27 +952,6 @@ class dominoInference:
 
         # Initialize with reference values
         self.global_params_values = self.global_params_reference.clone()
-
-    def set_global_params(self, params_dict):
-        """Set global parameters from a dictionary."""
-        if self.global_params_types is None:
-            raise RuntimeError(
-                "Global parameters not initialized. Call initialize_model first."
-            )
-
-        # Extract parameters using the utility function
-        global_params_array = extract_global_parameters(
-            params_dict, self.global_params_types, "set_global_params"
-        )
-        self.global_params_values = torch.from_numpy(global_params_array).to(
-            self.device
-        )
-        self.global_params_values = torch.unsqueeze(
-            self.global_params_values, 0
-        )  # (1, N)
-        self.global_params_values = torch.unsqueeze(
-            self.global_params_values, -1
-        )  # (1, N, 1)
 
     def set_global_params(self, params_dict):
         """Set global parameters from a dictionary."""
