@@ -37,7 +37,7 @@ import numpy as np
 
 from pathlib import Path
 
-from openfoam_datapipe import (
+from vtk_cfd_dataset import (
     DriveSimPaths,
     DrivAerAwsPaths,
     SHIFTPaths,

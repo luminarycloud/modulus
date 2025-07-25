@@ -21,7 +21,7 @@ parameters such as number of processors, input and output paths, etc. can be
 configured in config.yaml in the data_processing tab.
 """
 
-from openfoam_datapipe import VtkCfdDataset
+from vtk_cfd_dataset import VtkCfdDataset
 from physicsnemo.utils.domino.utils import *
 import multiprocessing
 import hydra, time

@@ -262,7 +262,7 @@ velocity, air density, etc.) that can vary across different simulations.
 
 4. Ensure your simulation data includes global parameter values. The DoMINO
    datapipe expects these parameters in the pre-processed `.npy`/`.npz` files:
-   - Examine `openfoam_datapipe.py` and `process_data.py` for examples of how global
+   - Examine `vtk_cfd_dataset.py` and `process_data.py` for examples of how global
      parameter values are incorporated for external aerodynamics
    - For the automotive example, `air_density` and `inlet_velocity` remain constant
      across simulations
@@ -327,7 +327,7 @@ The steps below outline the process.
    - `eval.checkpoint_name`: Checkpoint name `outputs/{project.name}/models` to evaluate
    model.
    - `eval.scaling_param_path`: Scaling parameters populated in `outputs/{project.name}`.
-3. Before running `process_data.py` to process the data, be sure to modify `openfoam_datapipe.py`.
+3. Before running `process_data.py` to process the data, be sure to modify `vtk_cfd_dataset.py`.
    This is the entry point for the user to modify the datapipe for dataprocessing.
    A couple of things that might need to be changed are non-dimensionalizing schemes
    based on the order of your variables and the `DrivAerAwsPaths` class with the
